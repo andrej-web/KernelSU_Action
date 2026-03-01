@@ -19,8 +19,8 @@ jobs:
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "KERNELSU_TAG=v0.9.5" >> $GITHUB_ENV
           echo "SOURCE_BOOT_IMAGE=https://tinyurl.com/fog-boot-image" >> $GITHUB_ENV
-          # Если автоматический выбор defconfig не подходит, укажите здесь нужное имя вручную (например, vendor/fog-perf_defconfig)
-          # echo "MANUAL_DEFCONFIG=vendor/fog-perf_defconfig" >> $GITHUB_ENV
+          # Если автоматический выбор defconfig не подходит, раскомментируйте и укажите нужное имя:
+          # echo "MANUAL_DEFCONFIG=vendor/bengal-perf_defconfig" >> $GITHUB_ENV
 
       - name: Install Dependencies
         run: |
@@ -31,7 +31,7 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
           git clone https://github.com/kdrag0n/proton-clang -b master $GITHUB_WORKSPACE/kernel_workspace/clang --depth=1
-          # GCC больше не используются, оставляем только Clang (LLVM=1)
+          # GCC больше не нужны, используем чистый Clang (LLVM=1)
 
       - name: Download Kernel Source
         run: |
@@ -49,7 +49,7 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           echo "=== Доступные defconfig ==="
           find arch/arm64/configs/ -type f -name "*defconfig*" | sed 's|arch/arm64/configs/||' | sort
-          
+
           # Если задан ручной defconfig, используем его
           if [ -n "$MANUAL_DEFCONFIG" ]; then
             echo "Используется ручной defconfig: $MANUAL_DEFCONFIG"
@@ -84,10 +84,9 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           CLANG_BIN=$GITHUB_WORKSPACE/kernel_workspace/clang/bin
 
-          # Добавляем bin/clang в PATH для использования утилит llvm-
-          export PATH="$CLANG_BIN:$PATH"
-
-          MAKE_ARGS="ARCH=arm64 O=out LLVM=1 LLVM_IAS=1"
+          # Важно: НЕ добавляем CLANG_BIN в PATH, чтобы host-инструменты использовали системный gcc
+          # Для кросс-компиляции ядра используем LLVM=1, а для host-программ явно указываем HOSTCC=gcc и HOSTLD=ld
+          MAKE_ARGS="ARCH=arm64 O=out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTLD=ld"
 
           echo "=== Конфигурация ==="
           make $MAKE_ARGS ${{ steps.defconfig.outputs.FINAL_CONFIG }} V=1
