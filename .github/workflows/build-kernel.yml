@@ -1,10 +1,12 @@
 name: Build Kernel with KernelSU
+
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # ручной запуск
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,18 +19,19 @@ jobs:
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "KERNELSU_TAG=v0.9.5" >> $GITHUB_ENV
           echo "SOURCE_BOOT_IMAGE=https://tinyurl.com/fog-boot-image" >> $GITHUB_ENV
+          # Если автоматический выбор defconfig не подходит, укажите здесь нужное имя вручную (например, vendor/fog-perf_defconfig)
+          # echo "MANUAL_DEFCONFIG=vendor/fog-perf_defconfig" >> $GITHUB_ENV
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lzip libssl-dev libelf-dev clang llvm lld wget curl
+          sudo apt-get install -y bc build-essential flex bison lzip libssl-dev libelf-dev clang llvm lld wget curl cpio
 
-      - name: Download Toolchains
+      - name: Download Toolchains (Proton Clang)
         run: |
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
           git clone https://github.com/kdrag0n/proton-clang -b master $GITHUB_WORKSPACE/kernel_workspace/clang --depth=1
-          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b lineage-19.1 $GITHUB_WORKSPACE/kernel_workspace/gcc-64 --depth=1
-          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b lineage-19.1 $GITHUB_WORKSPACE/kernel_workspace/gcc-32 --depth=1
+          # GCC больше не используются, оставляем только Clang (LLVM=1)
 
       - name: Download Kernel Source
         run: |
@@ -38,47 +41,79 @@ jobs:
       - name: Setup KernelSU
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          # Используем официальный скрипт установки
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+
+      - name: Select Defconfig
+        id: defconfig
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          echo "=== Доступные defconfig ==="
+          find arch/arm64/configs/ -type f -name "*defconfig*" | sed 's|arch/arm64/configs/||' | sort
+          
+          # Если задан ручной defconfig, используем его
+          if [ -n "$MANUAL_DEFCONFIG" ]; then
+            echo "Используется ручной defconfig: $MANUAL_DEFCONFIG"
+            echo "FINAL_CONFIG=$MANUAL_DEFCONFIG" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Автоматический поиск (приоритет: fog, затем bengal)
+          if [ -f "arch/arm64/configs/vendor/fog_defconfig" ]; then
+            FINAL="vendor/fog_defconfig"
+          elif [ -f "arch/arm64/configs/fog_defconfig" ]; then
+            FINAL="fog_defconfig"
+          elif [ -f "arch/arm64/configs/vendor/bengal-perf_defconfig" ]; then
+            FINAL="vendor/bengal-perf_defconfig"
+          elif [ -f "arch/arm64/configs/vendor/bengal_defconfig" ]; then
+            FINAL="vendor/bengal_defconfig"
+          else
+            # Берём любой с "bengal" в имени (если есть)
+            FINAL=$(find arch/arm64/configs/ -type f -name "*bengal*defconfig" | head -1 | sed 's|arch/arm64/configs/||')
+          fi
+
+          if [ -z "$FINAL" ]; then
+            echo "ОШИБКА: не удалось найти подходящий defconfig!"
+            exit 1
+          fi
+
+          echo "Выбран defconfig: $FINAL"
+          echo "FINAL_CONFIG=$FINAL" >> $GITHUB_OUTPUT
 
       - name: Build Kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           CLANG_BIN=$GITHUB_WORKSPACE/kernel_workspace/clang/bin
-          GCC64_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin
-          GCC32_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin
-          
-          # Находим конфиг (мы уже знаем, что это vendor/bengal-perf_defconfig)
-          FINAL_CONFIG="vendor/bengal-perf_defconfig"
 
-          # Добавляем флаг KCFLAGS=-w чтобы игнорировать мелкие предупреждения, которые стопят сборку
-          MAKE_ARGS="ARCH=arm64 \
-                     O=out \
-                     KCFLAGS=-w \
-                     CC=$CLANG_BIN/clang \
-                     CLANG_TRIPLE=aarch64-linux-gnu- \
-                     CROSS_COMPILE=$GCC64_BIN/aarch64-linux-android- \
-                     CROSS_COMPILE_ARM32=$GCC32_BIN/arm-linux-androideabi- \
-                     LD=$CLANG_BIN/ld.lld \
-                     AR=$CLANG_BIN/llvm-ar \
-                     NM=$CLANG_BIN/llvm-nm \
-                     OBJCOPY=$CLANG_BIN/llvm-objcopy \
-                     OBJDUMP=$CLANG_BIN/llvm-objdump \
-                     STRIP=$CLANG_BIN/llvm-strip"
+          # Добавляем bin/clang в PATH для использования утилит llvm-
+          export PATH="$CLANG_BIN:$PATH"
 
-          make -j$(nproc) $MAKE_ARGS $FINAL_CONFIG
-          # Собираем само ядро. Используем "|| exit 1" для отлова ошибок
-          make -j$(nproc) $MAKE_ARGS || exit 1
+          MAKE_ARGS="ARCH=arm64 O=out LLVM=1 LLVM_IAS=1"
 
-      - name: Patch and Upload
-        if: success()
+          echo "=== Конфигурация ==="
+          make $MAKE_ARGS ${{ steps.defconfig.outputs.FINAL_CONFIG }} V=1
+
+          echo "=== Сборка ядра ==="
+          make -j$(nproc) $MAKE_ARGS V=1
+
+      - name: Prepare Kernel Image
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          find android-kernel/out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} . \;
+          # Проверяем наличие собранного образа
+          IMAGE_PATH="android-kernel/out/arch/arm64/boot"
+          if [ -f "$IMAGE_PATH/Image.gz-dtb" ]; then
+            cp "$IMAGE_PATH/Image.gz-dtb" .
+            echo "Image.gz-dtb найден"
+          elif [ -f "$IMAGE_PATH/Image.gz" ]; then
+            cp "$IMAGE_PATH/Image.gz" .
+            echo "Image.gz найден"
+          else
+            echo "ОШИБКА: образ ядра не найден!"
+            exit 1
+          fi
 
       - name: Upload Artifact
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.KERNEL_ZIP_NAME }}
           path: ${{ github.workspace }}/kernel_workspace/Image.gz*
+          if-no-files-found: error
