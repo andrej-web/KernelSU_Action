@@ -58,12 +58,20 @@ jobs:
       - name: Build Kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          # Явно прописываем пути, не ломая системный PATH
           CLANG_BIN=$GITHUB_WORKSPACE/kernel_workspace/clang/bin
           GCC64_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin
           GCC32_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin
           
-          # Формируем аргументы сборки
+          # УМНЫЙ ПОИСК CONFIG: Если fog_defconfig нет в корне configs, ищем его в подпапках
+          REAL_CONFIG=${{ env.KERNEL_CONFIG }}
+          if [ ! -f "arch/arm64/configs/$REAL_CONFIG" ]; then
+            SEARCH_RESULT=$(find arch/arm64/configs/ -name "$REAL_CONFIG" | sed 's|arch/arm64/configs/||')
+            if [ ! -z "$SEARCH_RESULT" ]; then
+              REAL_CONFIG=$SEARCH_RESULT
+              echo "Нашли конфиг в подпапке: $REAL_CONFIG"
+            fi
+          fi
+
           MAKE_ARGS="ARCH=${{ env.ARCH }} \
                      O=out \
                      CC=$CLANG_BIN/clang \
@@ -77,17 +85,14 @@ jobs:
                      OBJDUMP=$CLANG_BIN/llvm-objdump \
                      STRIP=$CLANG_BIN/llvm-strip"
 
-          # 1. Создаем конфиг
-          make -j$(nproc) $MAKE_ARGS ${{ env.KERNEL_CONFIG }}
-          
-          # 2. Запускаем компиляцию
+          make -j$(nproc) $MAKE_ARGS $REAL_CONFIG
           make -j$(nproc) $MAKE_ARGS
 
       - name: Patch and Upload
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           wget -O boot-old.img "${{ env.SOURCE_BOOT_IMAGE }}"
-          # Ищем собранное ядро и копируем его для загрузки
+          # Ищем результат сборки
           find android-kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} . \;
           find android-kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} . \;
 
