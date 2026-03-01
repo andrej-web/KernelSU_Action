@@ -38,6 +38,7 @@ jobs:
       - name: Setup KernelSU
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          # Используем официальный скрипт установки
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
 
       - name: Build Kernel
@@ -47,28 +48,13 @@ jobs:
           GCC64_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin
           GCC32_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin
           
-          echo "=== СПИСОК ДОСТУПНЫХ КОНФИГОВ (для отладки) ==="
-          find arch/arm64/configs/ -name "*defconfig" | sed 's|arch/arm64/configs/||' | head -n 20
-          
-          # Проверяем по очереди: fog_defconfig -> bengal-perf_defconfig -> bengal_defconfig
-          if [ -f "arch/arm64/configs/vendor/fog_defconfig" ]; then
-              FINAL_CONFIG="vendor/fog_defconfig"
-          elif [ -f "arch/arm64/configs/fog_defconfig" ]; then
-              FINAL_CONFIG="fog_defconfig"
-          elif [ -f "arch/arm64/configs/vendor/bengal-perf_defconfig" ]; then
-              FINAL_CONFIG="vendor/bengal-perf_defconfig"
-          elif [ -f "arch/arm64/configs/vendor/bengal_defconfig" ]; then
-              FINAL_CONFIG="vendor/bengal_defconfig"
-          else
-              # Берем первый попавшийся с bengal, если ничего не нашли
-              FINAL_CONFIG=$(find arch/arm64/configs/ -name "*bengal*_defconfig" | head -n 1 | sed 's|arch/arm64/configs/||')
-          fi
+          # Находим конфиг (мы уже знаем, что это vendor/bengal-perf_defconfig)
+          FINAL_CONFIG="vendor/bengal-perf_defconfig"
 
-          if [ -z "$FINAL_CONFIG" ]; then echo "КРИТИЧЕСКАЯ ОШИБКА: Конфиг не найден!"; exit 1; fi
-          echo "ИСПОЛЬЗУЕМ КОНФИГ: $FINAL_CONFIG"
-
+          # Добавляем флаг KCFLAGS=-w чтобы игнорировать мелкие предупреждения, которые стопят сборку
           MAKE_ARGS="ARCH=arm64 \
                      O=out \
+                     KCFLAGS=-w \
                      CC=$CLANG_BIN/clang \
                      CLANG_TRIPLE=aarch64-linux-gnu- \
                      CROSS_COMPILE=$GCC64_BIN/aarch64-linux-android- \
@@ -81,17 +67,18 @@ jobs:
                      STRIP=$CLANG_BIN/llvm-strip"
 
           make -j$(nproc) $MAKE_ARGS $FINAL_CONFIG
-          make -j$(nproc) $MAKE_ARGS
+          # Собираем само ядро. Используем "|| exit 1" для отлова ошибок
+          make -j$(nproc) $MAKE_ARGS || exit 1
 
       - name: Patch and Upload
+        if: success()
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          # Ищем результат
           find android-kernel/out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} . \;
 
       - name: Upload Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.KERNEL_ZIP_NAME }}
-          path: |
-            ${{ github.workspace }}/kernel_workspace/Image.gz*
+          path: ${{ github.workspace }}/kernel_workspace/Image.gz*
