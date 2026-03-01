@@ -9,29 +9,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare config.env and export variables
+      - name: Prepare Variables
         run: |
-          cat > config.env <<EOF
-          KERNEL_SOURCE=https://github.com/r0ddty/kernel_xiaomi_fog
-          KERNEL_SOURCE_BRANCH=andromeda-mk2
-          KERNEL_CONFIG=fog_defconfig
-          KERNEL_ZIP_NAME=KernelSU-Makeine-fog.zip
-          ARCH=arm64
-          ENABLE_KERNELSU=true
-          KERNELSU_TAG=v0.9.5
-          BUILD_BOOT_IMG=true
-          SOURCE_BOOT_IMAGE=https://tinyurl.com/fog-boot-image
-          USE_CUSTOM_CLANG=true
-          CUSTOM_CLANG_SOURCE=https://github.com/kdrag0n/proton-clang
-          CUSTOM_CLANG_BRANCH=master
-          USE_CUSTOM_GCC_64=true
-          CUSTOM_GCC_64_SOURCE=https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
-          CUSTOM_GCC_64_BRANCH=lineage-19.1
-          USE_CUSTOM_GCC_32=true
-          CUSTOM_GCC_32_SOURCE=https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
-          CUSTOM_GCC_32_BRANCH=lineage-19.1
-          EOF
-          grep -v '^#' config.env | grep -v '^$' >> $GITHUB_ENV
+          echo "KERNEL_SOURCE=https://github.com/r0ddty/kernel_xiaomi_fog" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=andromeda-mk2" >> $GITHUB_ENV
+          echo "KERNEL_ZIP_NAME=KernelSU-Makeine-fog.zip" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "KERNELSU_TAG=v0.9.5" >> $GITHUB_ENV
+          echo "SOURCE_BOOT_IMAGE=https://tinyurl.com/fog-boot-image" >> $GITHUB_ENV
 
       - name: Install Dependencies
         run: |
@@ -41,9 +26,9 @@ jobs:
       - name: Download Toolchains
         run: |
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
-          git clone ${{ env.CUSTOM_CLANG_SOURCE }} -b ${{ env.CUSTOM_CLANG_BRANCH }} $GITHUB_WORKSPACE/kernel_workspace/clang --depth=1
-          git clone ${{ env.CUSTOM_GCC_64_SOURCE }} -b ${{ env.CUSTOM_GCC_64_BRANCH }} $GITHUB_WORKSPACE/kernel_workspace/gcc-64 --depth=1
-          git clone ${{ env.CUSTOM_GCC_32_SOURCE }} -b ${{ env.CUSTOM_GCC_32_BRANCH }} $GITHUB_WORKSPACE/kernel_workspace/gcc-32 --depth=1
+          git clone https://github.com/kdrag0n/proton-clang -b master $GITHUB_WORKSPACE/kernel_workspace/clang --depth=1
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b lineage-19.1 $GITHUB_WORKSPACE/kernel_workspace/gcc-64 --depth=1
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b lineage-19.1 $GITHUB_WORKSPACE/kernel_workspace/gcc-32 --depth=1
 
       - name: Download Kernel Source
         run: |
@@ -62,22 +47,27 @@ jobs:
           GCC64_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin
           GCC32_BIN=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin
           
-          # ПРОВЕРКА ПУТИ К КОНФИГУ
-          if [ ! -f "arch/arm64/configs/${{ env.KERNEL_CONFIG }}" ]; then
-            # Если файла нет в корне, ищем его в vendor/ или других папках
-            FIND_CONFIG=$(find arch/arm64/configs/ -name "${{ env.KERNEL_CONFIG }}" | sed 's|arch/arm64/configs/||')
-            if [ ! -z "$FIND_CONFIG" ]; then
-              export FINAL_CONFIG=$FIND_CONFIG
-              echo "Конфиг найден по пути: $FINAL_CONFIG"
-            else
-              echo "ОШИБКА: ${{ env.KERNEL_CONFIG }} не найден!"
-              exit 1
-            fi
+          echo "=== СПИСОК ДОСТУПНЫХ КОНФИГОВ (для отладки) ==="
+          find arch/arm64/configs/ -name "*defconfig" | sed 's|arch/arm64/configs/||' | head -n 20
+          
+          # Проверяем по очереди: fog_defconfig -> bengal-perf_defconfig -> bengal_defconfig
+          if [ -f "arch/arm64/configs/vendor/fog_defconfig" ]; then
+              FINAL_CONFIG="vendor/fog_defconfig"
+          elif [ -f "arch/arm64/configs/fog_defconfig" ]; then
+              FINAL_CONFIG="fog_defconfig"
+          elif [ -f "arch/arm64/configs/vendor/bengal-perf_defconfig" ]; then
+              FINAL_CONFIG="vendor/bengal-perf_defconfig"
+          elif [ -f "arch/arm64/configs/vendor/bengal_defconfig" ]; then
+              FINAL_CONFIG="vendor/bengal_defconfig"
           else
-            export FINAL_CONFIG=${{ env.KERNEL_CONFIG }}
+              # Берем первый попавшийся с bengal, если ничего не нашли
+              FINAL_CONFIG=$(find arch/arm64/configs/ -name "*bengal*_defconfig" | head -n 1 | sed 's|arch/arm64/configs/||')
           fi
 
-          MAKE_ARGS="ARCH=${{ env.ARCH }} \
+          if [ -z "$FINAL_CONFIG" ]; then echo "КРИТИЧЕСКАЯ ОШИБКА: Конфиг не найден!"; exit 1; fi
+          echo "ИСПОЛЬЗУЕМ КОНФИГ: $FINAL_CONFIG"
+
+          MAKE_ARGS="ARCH=arm64 \
                      O=out \
                      CC=$CLANG_BIN/clang \
                      CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -96,9 +86,8 @@ jobs:
       - name: Patch and Upload
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          wget -O boot-old.img "${{ env.SOURCE_BOOT_IMAGE }}"
-          find android-kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} . \;
-          find android-kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} . \;
+          # Ищем результат
+          find android-kernel/out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} . \;
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
